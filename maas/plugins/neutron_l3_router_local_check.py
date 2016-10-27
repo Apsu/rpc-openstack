@@ -112,8 +112,6 @@ def _ns_check(neutron):
             print("-> {} / {}".format(addr, mask))
 
 
-
-
 def check():
     try:
         neutron = get_neutron_client()
@@ -131,13 +129,19 @@ def check():
         #agents = _to_dict_by_id(neutron.list_agents()['agents'])
         #subnets = _to_dict_by_id(neutron.list_subnets()['subnets'])
 
-        # Check for and count unscheduled routers
+        # Check for router conditions
         unscheduled_routers = 0
+        inactive_routers = 0
+        down_routers = 0
         for uuid, router in routers.items():
           try:
             neutron.list_l3_agent_hosting_routers(uuid)
           except exc.NeutronClientException as e:
             unscheduled_routers += 1
+          if router["status"] != "ACTIVE":
+            inactive_routers += 1
+          if router["admin_state_up"] != True:
+            down_routers += 1
 
         # Get container objects for neutron-agents containers
         containers = [c for c in lxc.list_containers(as_object=True)
@@ -152,6 +156,14 @@ def check():
     metric('neutron_unscheduled_routers',
            'uint32',
            unscheduled_routers,
+           'routers')
+    metric('neutron_inactive_routers',
+           'uint32',
+           inactive_routers,
+           'routers')
+    metric('neutron_down_routers',
+           'uint32',
+           down_routers,
            'routers')
     #metric_bool('neutron_api_local_status', is_up)
     ## only want to send other metrics if api is up
