@@ -46,6 +46,16 @@ def _get_addresses(interface, ipv6=False):
     if (ipv6 | (":" not in addr))
   ]
 
+# Get UUID suffix from namespace name
+def _get_id_from_ns(namespace):
+  # Split at first hyphen
+  prefix, uuid = namespace.split("-", 1)
+  return uuid
+
+# Convert list to dict, indexed by "id" values
+def _to_dict_by_id(array):
+  return {v["id"]:v for v in array}
+
 # Dump iptables chains and rules
 def _dump_rules(table):
   chains = table.list_chains()
@@ -56,30 +66,30 @@ def _dump_rules(table):
       print(">> {}".format(rule.specbits()))
 
 # Check function to run in containers
-def _ns_check():
+def _ns_check(neutron):
   # Get all network namespaces
   namespaces = netns.listnetns()
-  # Filter DHCP and Router namespaces
-  dhcps = [n for n in namespaces if "dhcp" in n]
+  # Filter Router namespaces
+  #dhcps = [n for n in namespaces if "dhcp" in n]
   routers = [r for r in namespaces if "router" in r]
 
-  # DHCP
-  print("==DHCP Namespaces==")
-
-  # For each DHCP namespace
-  for dhcp in dhcps:
-    print("--{}--".format(dhcp))
-    with NetNS(dhcp) as ns:
-      # iptables
-      for table in ["raw", "filter", "nat", "mangle"]:
-        print(":: Table: {}".format(table))
-        _dump_rules(Table(table))
-      with IPDB(nl=ns) as ip:
-        for name, interface in _get_interfaces(ip):
-          print("Interface: {}, Operstate: {}".format(name, interface.operstate))
-          print("Addresses:")
-          for addr, mask in _get_addresses(interface):
-            print("-> {} / {}".format(addr, mask))
+#  # DHCP
+#  print("==DHCP Namespaces==")
+#
+#  # For each DHCP namespace
+#  for dhcp in dhcps:
+#    print("--{}--".format(dhcp))
+#    with NetNS(dhcp) as ns:
+#      # iptables
+#      for table in ["raw", "filter", "nat", "mangle"]:
+#        print(":: Table: {}".format(table))
+#        _dump_rules(Table(table))
+#      with IPDB(nl=ns) as ip:
+#        for name, interface in _get_interfaces(ip):
+#          print("Interface: {}, Operstate: {}".format(name, interface.operstate))
+#          print("Addresses:")
+#          for addr, mask in _get_addresses(interface):
+#            print("-> {} / {}".format(addr, mask))
 
   # Routers
   print("==Router Namespaces==")
@@ -88,10 +98,12 @@ def _ns_check():
   for router in routers:
     print("--{}--".format(router))
     with NetNS(router) as ns:
+      uuid = _get_id_from_ns(router)
+      print("UUID: {}".format(uuid))
       # iptables
-      for table in ["raw", "filter", "nat", "mangle"]:
-        print(":: Table: {}".format(table))
-        _dump_rules(Table(table))
+#      for table in ["raw", "filter", "nat", "mangle"]:
+#        print(":: Table: {}".format(table))
+#        _dump_rules(Table(table))
       with IPDB(nl=ns) as ip:
         for name, interface in _get_interfaces(ip):
           print("Interface: {}, Operstate: {}".format(name, interface.operstate))
@@ -114,10 +126,18 @@ def check():
         status_err(str(e))
     else:
         # Get lists of things
-        networks = len(neutron.list_networks()['networks'])
-        agents = len(neutron.list_agents()['agents'])
-        routers = len(neutron.list_routers()['routers'])
-        subnets = len(neutron.list_subnets()['subnets'])
+        routers = _to_dict_by_id(neutron.list_routers()['routers'])
+        #networks = _to_dict_by_id(neutron.list_networks()['networks'])
+        #agents = _to_dict_by_id(neutron.list_agents()['agents'])
+        #subnets = _to_dict_by_id(neutron.list_subnets()['subnets'])
+
+        # Check for and count unscheduled routers
+        unscheduled_routers = 0
+        for uuid, router in routers.items():
+          try:
+            neutron.list_l3_agent_hosting_routers(uuid)
+          except exc.NeutronClientException as e:
+            unscheduled_routers += 1
 
         # Get container objects for neutron-agents containers
         containers = [c for c in lxc.list_containers(as_object=True)
@@ -126,9 +146,13 @@ def check():
         # For each matching container
         for container in containers:
           # Attach, run check function, and wait for completion
-          container.attach_wait(_ns_check)
+          container.attach_wait(_ns_check, neutron)
 
     status_ok()
+    metric('neutron_unscheduled_routers',
+           'uint32',
+           unscheduled_routers,
+           'routers')
     #metric_bool('neutron_api_local_status', is_up)
     ## only want to send other metrics if api is up
     #if is_up:
