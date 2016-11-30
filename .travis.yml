@@ -1,7 +1,7 @@
 language: python
 
 before_script:
-- pip install tox
+- pip install 'tox!=2.4.0,>=2.3'
 
 script: tox
 
@@ -18,5 +18,7 @@ matrix:
       env: TOXENV=releasenotes
     - python: 2.7
       env: TOXENV=bashate
+    - python: 2.7
+      env: TOXENV=release-script
 
 sudo: false

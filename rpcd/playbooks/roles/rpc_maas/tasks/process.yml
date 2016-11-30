@@ -1,5 +1,5 @@
 ---
-# Copyright 2015, Rackspace US, Inc.
+# Copyright 2016, Rackspace US, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,14 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-- include: repo_setup.yml
 
-- include: package_install.yml
-
-- include: raxmon_cli_config.yml
-
-- include: agent_install_local.yml
-- include: agent_install_remote.yml
-  vars:
-    entity_name: "{{ inventory_hostname }}{{ maas_fqdn_extension }}"
-  when: "{{ maas_use_api | bool }}"
+- name: Install process checks
+  template:
+    src: "{{ item.name }}.yaml.j2"
+    dest: "/etc/rackspace-monitoring-agent.conf.d/{{ item.name }}-{{ inventory_hostname }}.yaml"
+    owner: "root"
+    group: "root"
+    mode: "0644"
+  with_items:
+    - "{{ process_checks_list }}"
+  when:
+    - inventory_hostname in groups[ '{{ item.group }}' ]
+    - item.name not in maas_excluded_checks
+  delegate_to: "{{ physical_host }}"

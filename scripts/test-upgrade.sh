@@ -21,6 +21,7 @@ set -eux -o pipefail
 export BASE_DIR=$( cd "$( dirname ${0} )" && cd ../ && pwd )
 export OA_DIR="$BASE_DIR/openstack-ansible"
 export RPCD_DIR="$BASE_DIR/rpcd"
+export UPGRADE_VARIABLES_FILE="/etc/openstack_deploy/user_upgrade_variables.yml"
 
 source ${BASE_DIR}/scripts/functions.sh
 
@@ -90,22 +91,6 @@ openstack-ansible lxc-containers-destroy.yml --limit repo_all
 openstack-ansible setup-hosts.yml --limit repo_all
 
 # TASK #5
-# Bug:   https://github.com/rcbops/u-suk-dev/issues/374
-# Issue: Neutron has no migration to correctly set the MTU on existing networks
-#        created in liberty or below.  This work-around sets the MTU on these
-#        networks before the upgrade starts so that instances booted on these
-#        networks after the upgrade has finished will have their MTUs set
-#        correctly.
-# NOTE: In newton, MTUs will be calculated on the fly and this mtu field will
-#       get dropped.
-VLAN_FLAT="UPDATE networks SET mtu='1500' WHERE id IN (SELECT network_id FROM ml2_network_segments WHERE network_type IN ('vlan','flat'));"
-VXLAN="UPDATE networks SET mtu='1450' WHERE id IN (SELECT network_id FROM ml2_network_segments WHERE network_type='vxlan');"
-
-cd ${OA_DIR}/playbooks
-ansible galera_all[0] -m shell -a "mysql --verbose -e \"${VLAN_FLAT}\" neutron"
-ansible galera_all[0] -m shell -a "mysql --verbose -e \"${VXLAN}\" neutron"
-
-# TASK #6
 # Bug:   https://github.com/rcbops/u-suk-dev/issues/383
 # Issue: The ceph-all.yml playbook will fail because of the hostname
 #        changes introduced in Mitaka. This section recreates the mons
@@ -127,6 +112,7 @@ if [ $(echo ${mons} | wc -w) -gt 0 ]; then
   #This shouldn't change a thing, it's a regular playbook run.
   openstack-ansible ${RPCD_DIR}/playbooks/gen-facts.yml
   for mon in ${mons}; do
+    ansible $mon -m shell -a "ceph --format json-pretty status | grep -q '\"overall_status\": \"HEALTH_OK\"'"
     ansible $mon -m command -a "stop ceph-mon id=$mon"
     ansible $mon -m command -a "ceph mon remove $mon"
     openstack-ansible lxc-containers-destroy.yml --skip-tags=container-directories --limit $mon
@@ -139,13 +125,24 @@ if [ $(echo ${mons} | wc -w) -gt 0 ]; then
   openstack-ansible ${RPCD_DIR}/playbooks/ceph-all.yml
 fi
 
-# TASK #7
+# TASK #6
 # https://github.com/rcbops/u-suk-dev/issues/392
 # Upgrade openstack-ansible
 pushd ${OA_DIR}
 export I_REALLY_KNOW_WHAT_I_AM_DOING=true
 echo "YES" | ${OA_DIR}/scripts/run-upgrade.sh
 popd
+
+# TASK #7
+# Set upgrade variables for the RPCO playbooks
+# The variables are put into a temporary user_variables file, then deleted
+# at the end of this script.
+touch ${UPGRADE_VARIABLES_FILE}
+if grep -q 'logging_upgrade' ${UPGRADE_VARIABLES_FILE}; then
+  sed -i "s/logging_upgrade:.*$/logging_upgrade: true/" ${UPGRADE_VARIABLES_FILE}
+else
+  echo "logging_upgrade: true" >> ${UPGRADE_VARIABLES_FILE}
+fi
 
 # TASK #8
 # https://github.com/rcbops/u-suk-dev/issues/393
@@ -164,3 +161,5 @@ bash scripts/deploy-rpc-playbooks.sh
 #              the rpc_post_upgrade role directory.
 cd ${RPCD_DIR}/playbooks
 openstack-ansible rpc-post-upgrades.yml
+
+rm ${UPGRADE_VARIABLES_FILE}
