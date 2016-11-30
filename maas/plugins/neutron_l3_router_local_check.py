@@ -49,8 +49,7 @@ def _get_addresses(interface, ipv6=False):
 # Get UUID suffix from namespace name
 def _get_id_from_ns(namespace):
   # Split at first hyphen
-  prefix, uuid = namespace.split("-", 1)
-  return uuid
+  return namespace.split("-", 1)[1]
 
 # Convert list to dict, indexed by "id" values
 def _to_dict_by_id(array):
@@ -66,12 +65,14 @@ def _dump_rules(table):
       print(">> {}".format(rule.specbits()))
 
 # Check function to run in containers
-def _ns_check(neutron):
+def _ns_check(args):
+  # Unpack args
+  router_dict, float_dict, subnet_dict, port_dict = args
   # Get all network namespaces
   namespaces = netns.listnetns()
   # Filter Router namespaces
   #dhcps = [n for n in namespaces if "dhcp" in n]
-  routers = [r for r in namespaces if "router" in r]
+  router_namespaces = [r for r in namespaces if "router" in r]
 
 #  # DHCP
 #  print("==DHCP Namespaces==")
@@ -95,17 +96,33 @@ def _ns_check(neutron):
   print("==Router Namespaces==")
 
   # For each Router namespace
-  for router in routers:
-    print("--{}--".format(router))
-    with NetNS(router) as ns:
-      uuid = _get_id_from_ns(router)
-      print("UUID: {}".format(uuid))
+  for router_ns in router_namespaces:
+    router_id = _get_id_from_ns(router_ns)
+    print("{}".format(router_dict[router_id]))
+    print("--{}--".format(router_id))
+    # Enter namespace
+    with NetNS(router_ns) as ns:
       # iptables
 #      for table in ["raw", "filter", "nat", "mangle"]:
 #        print(":: Table: {}".format(table))
 #        _dump_rules(Table(table))
+      # Get database of interfaces
       with IPDB(nl=ns) as ip:
+        # For each interface
         for name, interface in _get_interfaces(ip):
+          # Get addr/mask tuples
+          addresses = _get_addresses(interface)
+          # Gateway interface?
+#          if name.startswith("qg"):
+#
+#          # Internal interface?
+#          elif name.startswith("qr"):
+#          
+#          # Ruh roh
+#          else:
+#            # TODO: Figure out if we care about this
+#            print("Found a weird interface '{}' in namespace for router '{}'".format(name, router_id))
+
           print("Interface: {}, Operstate: {}".format(name, interface.operstate))
           print("Addresses:")
           for addr, mask in _get_addresses(interface):
@@ -116,18 +133,13 @@ def check():
     try:
         neutron = get_neutron_client()
 
-    except exc.NeutronClientException:
-      # TODO: Do something else here
-      pass
-    # Any other exception presumably isn't an API error
-    except Exception as e:
-        status_err(str(e))
-    else:
         # Get lists of things
         routers = _to_dict_by_id(neutron.list_routers()['routers'])
+        ports = _to_dict_by_id(neutron.list_ports()['ports'])
+        floats = _to_dict_by_id(neutron.list_floatingips()['floatingips'])
         #networks = _to_dict_by_id(neutron.list_networks()['networks'])
         #agents = _to_dict_by_id(neutron.list_agents()['agents'])
-        #subnets = _to_dict_by_id(neutron.list_subnets()['subnets'])
+        subnets = _to_dict_by_id(neutron.list_subnets()['subnets'])
 
         # Check for router conditions
         unscheduled_routers = 0
@@ -150,21 +162,28 @@ def check():
         # For each matching container
         for container in containers:
           # Attach, run check function, and wait for completion
-          container.attach_wait(_ns_check, neutron)
+          container.attach_wait(_ns_check, [routers, floats, subnets, ports])
+    except exc.NeutronClientException:
+      # TODO: Do something else here
+      pass
+    # Any other exception presumably isn't an API error
+    except Exception as e:
+        status_err(str(e))
+    else:
+      status_ok()
+      metric('neutron_unscheduled_routers',
+             'uint32',
+             unscheduled_routers,
+             'routers')
+      metric('neutron_inactive_routers',
+             'uint32',
+             inactive_routers,
+             'routers')
+      metric('neutron_down_routers',
+             'uint32',
+             down_routers,
+             'routers')
 
-    status_ok()
-    metric('neutron_unscheduled_routers',
-           'uint32',
-           unscheduled_routers,
-           'routers')
-    metric('neutron_inactive_routers',
-           'uint32',
-           inactive_routers,
-           'routers')
-    metric('neutron_down_routers',
-           'uint32',
-           down_routers,
-           'routers')
     #metric_bool('neutron_api_local_status', is_up)
     ## only want to send other metrics if api is up
     #if is_up:
