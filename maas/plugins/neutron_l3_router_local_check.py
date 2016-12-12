@@ -71,26 +71,10 @@ def _ns_check(args):
   # Get all network namespaces
   namespaces = netns.listnetns()
   # Filter Router namespaces
-  #dhcps = [n for n in namespaces if "dhcp" in n]
   router_namespaces = [r for r in namespaces if "router" in r]
 
-#  # DHCP
-#  print("==DHCP Namespaces==")
-#
-#  # For each DHCP namespace
-#  for dhcp in dhcps:
-#    print("--{}--".format(dhcp))
-#    with NetNS(dhcp) as ns:
-#      # iptables
-#      for table in ["raw", "filter", "nat", "mangle"]:
-#        print(":: Table: {}".format(table))
-#        _dump_rules(Table(table))
-#      with IPDB(nl=ns) as ip:
-#        for name, interface in _get_interfaces(ip):
-#          print("Interface: {}, Operstate: {}".format(name, interface.operstate))
-#          print("Addresses:")
-#          for addr, mask in _get_addresses(interface):
-#            print("-> {} / {}".format(addr, mask))
+  # Metrics
+  missing_floats = 0
 
   # Routers
   print("==Router Namespaces==")
@@ -98,11 +82,12 @@ def _ns_check(args):
   # For each Router namespace
   for router_ns in router_namespaces:
     router_id = _get_id_from_ns(router_ns)
-    print("{}".format(router_dict[router_id]))
+    router = router_dict[router_id]
+    print("{}".format(router))
     print("--{}--".format(router_id))
     # Enter namespace
     with NetNS(router_ns) as ns:
-      # iptables
+#      # iptables
 #      for table in ["raw", "filter", "nat", "mangle"]:
 #        print(":: Table: {}".format(table))
 #        _dump_rules(Table(table))
@@ -111,22 +96,30 @@ def _ns_check(args):
         # For each interface
         for name, interface in _get_interfaces(ip):
           # Get addr/mask tuples
-          addresses = _get_addresses(interface)
+          addresses = [addr for addr, mask in _get_addresses(interface)]
           # Gateway interface?
-#          if name.startswith("qg"):
-#
+          if name.startswith("qg"):
+            # Check floats
+            for floating_ip in router["floating_ips"]:
+              if not floating_ip in addresses:
+                missing_floats += 1
 #          # Internal interface?
 #          elif name.startswith("qr"):
-#          
-#          # Ruh roh
-#          else:
-#            # TODO: Figure out if we care about this
-#            print("Found a weird interface '{}' in namespace for router '{}'".format(name, router_id))
+          
+          # Ruh roh
+          else:
+            # TODO: Figure out if we care about this
+            print("Found a weird interface '{}' in namespace for router '{}'".format(name, router_id))
 
-          print("Interface: {}, Operstate: {}".format(name, interface.operstate))
-          print("Addresses:")
-          for addr, mask in _get_addresses(interface):
-            print("-> {} / {}".format(addr, mask))
+#          print("Interface: {}, Operstate: {}".format(name, interface.operstate))
+#          print("Addresses:")
+#          for addr, mask in _get_addresses(interface):
+#            print("-> {} / {}".format(addr, mask))
+
+  metric('neutron_missing_floats',
+         'uint32',
+         missing_floats,
+         'floats')
 
 
 def check():
@@ -136,10 +129,27 @@ def check():
         # Get lists of things
         routers = _to_dict_by_id(neutron.list_routers()['routers'])
         ports = _to_dict_by_id(neutron.list_ports()['ports'])
-        floats = _to_dict_by_id(neutron.list_floatingips()['floatingips'])
         #networks = _to_dict_by_id(neutron.list_networks()['networks'])
         #agents = _to_dict_by_id(neutron.list_agents()['agents'])
         subnets = _to_dict_by_id(neutron.list_subnets()['subnets'])
+        floating_ips = _to_dict_by_id(neutron.list_floatingips()['floatingips'])
+
+        # Add floats to router dict
+        for k, v in floating_ips.items():
+          # Get router if any
+          if v["router_id"] in routers.keys():
+            router = routers[v["router_id"]]
+          # Float isn't used, continue
+          else:
+            continue
+
+          # No floats stored already?
+          if not "floating_ips" in router.keys():
+            # Add as first
+            router["floating_ips"] = v["floating_ip_address"]
+          else:
+            # Append to existing
+            router["floating_ips"].append(v["floating_ip_address"])
 
         # Check for router conditions
         unscheduled_routers = 0
@@ -162,13 +172,13 @@ def check():
         # For each matching container
         for container in containers:
           # Attach, run check function, and wait for completion
-          container.attach_wait(_ns_check, [routers, floats, subnets, ports])
+          container.attach_wait(_ns_check, [routers, floating_ips, subnets, ports])
     except exc.NeutronClientException:
       # TODO: Do something else here
       pass
     # Any other exception presumably isn't an API error
-    except Exception as e:
-        status_err(str(e))
+#    except Exception as e:
+#        status_err(str(e))
     else:
       status_ok()
       metric('neutron_unscheduled_routers',
