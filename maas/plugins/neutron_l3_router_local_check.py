@@ -194,18 +194,6 @@ def check():
              down_routers,
              'routers')
 
-    #metric_bool('neutron_api_local_status', is_up)
-    ## only want to send other metrics if api is up
-    #if is_up:
-    #    metric('neutron_api_local_response_time',
-    #           'double',
-    #           '%.3f' % milliseconds,
-    #           'ms')
-    #    metric('neutron_networks', 'uint32', networks, 'networks')
-    #    metric('neutron_agents', 'uint32', agents, 'agents')
-    #    metric('neutron_routers', 'uint32', routers, 'agents')
-    #    metric('neutron_subnets', 'uint32', subnets, 'subnets')
-
 
 if __name__ == "__main__":
     with print_output():
